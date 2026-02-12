@@ -2,7 +2,7 @@
   "id": "processList",
   "name": "Process List",
   "description": "Desktop overlay widget for live process monitoring with grouping, sorting, and scope filters",
-  "version": "1.2.1",
+  "version": "1.0.0",
   "author": "mith",
   "type": "desktop",
   "capabilities": ["desktop-widget", "process-list"],
