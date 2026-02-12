@@ -2,6 +2,8 @@
 
 Desktop widget for DankMaterialShell that shows running processes with live CPU/memory data.
 
+![Process List Screenshot](screenshot.png)
+
 ## Features
 
 - Live process list from `ps`
