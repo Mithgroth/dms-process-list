@@ -1,0 +1,14 @@
+{
+  "id": "processList",
+  "name": "Process List",
+  "description": "Desktop overlay widget for live process monitoring with grouping, sorting, and scope filters",
+  "version": "1.2.1",
+  "author": "mith",
+  "type": "desktop",
+  "capabilities": ["desktop-widget", "process-list"],
+  "component": "./ProcessListDesktop.qml",
+  "icon": "list_alt",
+  "requires_dms": ">=0.1.18",
+  "requires": ["ps", "getconf"],
+  "permissions": ["settings_read", "settings_write", "process"]
+}
