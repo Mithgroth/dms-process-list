@@ -39,7 +39,7 @@ dms restart
 
 ```bash
 mkdir -p ~/.config/DankMaterialShell/plugins
-tar -xzf processList-1.2.1.tar.gz -C ~/.config/DankMaterialShell/plugins
+tar -xzf processList-1.0.0.tar.gz -C ~/.config/DankMaterialShell/plugins
 dms restart
 ```
 
