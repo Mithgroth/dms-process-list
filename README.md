@@ -6,24 +6,24 @@ Desktop widget for DankMaterialShell that shows running processes with live CPU/
 
 ## Features
 
-- Live process list from `ps`
-- CPU values normalized by core count
+- Live process list from `DgopService` (backed by `dgop`)
+- CPU and memory values from DMS process telemetry
 - Sorting by process name, count, CPU, memory, and PID
 - Grouping by process command (singletons stay as normal rows)
 - Expand/collapse grouped processes
-- Scope filter: `ALL | USER | SYSTEM` (default: `USER`)
+- Scope filter: `ALL | USER | SYSTEM`
 - Toggle to hide idle processes
 - Process name color coding:
   - User processes: accent color
   - System processes: gray
   - Mixed groups: default text color
-- USER/SYSTEM split is based on `UID_MIN` from `/etc/login.defs` (fallback: `1000`)
+- USER/SYSTEM split uses owner metadata when available from `DgopService`
+- If owner metadata is unavailable, scope automatically falls back to `ALL`
 
 ## Requirements
 
 - DankMaterialShell with desktop plugin support (`>=0.1.18`)
-- `ps` (from `procps`)
-- `getconf` (usually from `glibc`)
+- `dgop`
 
 ## Installation
 

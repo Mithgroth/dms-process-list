@@ -9,6 +9,6 @@
   "component": "./ProcessListDesktop.qml",
   "icon": "list_alt",
   "requires_dms": ">=0.1.18",
-  "requires": ["ps", "getconf"],
+  "requires": ["dgop"],
   "permissions": ["settings_read", "settings_write", "process"]
 }

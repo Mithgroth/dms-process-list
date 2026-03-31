@@ -1,8 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
-import Quickshell.Io
 import qs.Common
+import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
 
@@ -23,21 +23,20 @@ DesktopPluginComponent {
     property bool groupedView: pluginData.groupedView ?? true
     property string processScope: pluginData.processScope ?? "user"
     property bool hideIdleProcesses: pluginData.hideIdleProcesses ?? false
-    property int refreshInterval: pluginData.refreshInterval ?? 3
     property bool showPid: pluginData.showPid ?? true
     property bool showCpu: pluginData.showCpu ?? true
     property bool showMemory: pluginData.showMemory ?? true
     property real idleCpuThreshold: pluginData.idleCpuThreshold ?? 0.1
     property real idleMemoryThreshold: pluginData.idleMemoryThreshold ?? 0.2
-    property int userUidMin: 1000
+    property string currentLoginUser: (Quickshell.env("USER") || "").trim()
 
     property var rawProcesses: []
     property var processes: []
     property int groupCount: 0
     property int visibleProcessCount: 0
-    property int cpuCoreCount: pluginData.cpuCoreCount ?? 1
     property var expandedGroups: ({})
     property string lastError: ""
+    property bool ownerScopeAvailable: false
 
     readonly property color accentColor: {
         switch (colorMode) {
@@ -64,32 +63,22 @@ DesktopPluginComponent {
     readonly property int countColWidth: groupedView ? 60 : 0
 
     function refreshProcesses() {
-        if (processReader.running) {
-            return;
-        }
-        processReader.running = true;
-    }
-
-    function refreshCoreCount() {
-        if (coreCountReader.running) {
-            return;
-        }
-        coreCountReader.running = true;
-    }
-
-    function refreshUidMin() {
-        if (uidMinReader.running) {
-            return;
-        }
-        uidMinReader.running = true;
+        syncFromDgopService();
     }
 
     function normalizedCpu(cpuValue) {
-        return (cpuValue || 0) / Math.max(1, root.cpuCoreCount);
+        return cpuValue || 0;
     }
 
-    function ownerTypeForUid(uid) {
-        return uid >= root.userUidMin ? "user" : "system";
+    function ownerTypeForUsername(username) {
+        const user = (username || "").trim();
+        if (!user) {
+            return "system";
+        }
+        if (!root.currentLoginUser) {
+            return user === "root" ? "system" : "user";
+        }
+        return user === root.currentLoginUser ? "user" : "system";
     }
 
     function mergeOwnerType(currentType, nextType) {
@@ -116,13 +105,17 @@ DesktopPluginComponent {
     }
 
     function visibleRawProcesses() {
+        if (!root.ownerScopeAvailable && root.processScope !== "all") {
+            return root.rawProcesses;
+        }
+
         let scoped = [];
         if (root.processScope === "all") {
             scoped = root.rawProcesses;
         } else if (root.processScope === "system") {
-            scoped = root.rawProcesses.filter(process => (process.ownerType || "system") === "system");
+            scoped = root.rawProcesses.filter(process => (process.ownerType || "unknown") === "system");
         } else {
-            scoped = root.rawProcesses.filter(process => (process.ownerType || "system") === "user");
+            scoped = root.rawProcesses.filter(process => (process.ownerType || "unknown") === "user");
         }
 
         if (!root.hideIdleProcesses) {
@@ -214,7 +207,7 @@ DesktopPluginComponent {
                     "cpu": 0,
                     "memoryPercent": 0,
                     "pid": process.pid || 0,
-                    "ownerType": process.ownerType || "system",
+                    "ownerType": process.ownerType || "unknown",
                     "children": []
                 };
             }
@@ -224,7 +217,7 @@ DesktopPluginComponent {
             entry.cpu += process.cpu || 0;
             entry.memoryPercent += process.memoryPercent || 0;
             entry.pid = Math.min(entry.pid, process.pid || 0);
-            entry.ownerType = root.mergeOwnerType(entry.ownerType, process.ownerType || "system");
+            entry.ownerType = root.mergeOwnerType(entry.ownerType, process.ownerType || "unknown");
             entry.children.push(process);
         }
 
@@ -244,7 +237,7 @@ DesktopPluginComponent {
                     "cpu": onlyProcess.cpu,
                     "memoryPercent": onlyProcess.memoryPercent,
                     "pid": onlyProcess.pid,
-                    "ownerType": onlyProcess.ownerType || "system"
+                    "ownerType": onlyProcess.ownerType || "unknown"
                 });
                 continue;
             }
@@ -258,7 +251,7 @@ DesktopPluginComponent {
                 "cpu": group.cpu,
                 "memoryPercent": group.memoryPercent,
                 "pid": group.pid,
-                "ownerType": group.ownerType || "system"
+                "ownerType": group.ownerType || "unknown"
             });
 
             if (root.expandedGroups[group.command]) {
@@ -272,7 +265,7 @@ DesktopPluginComponent {
                         "cpu": process.cpu,
                         "memoryPercent": process.memoryPercent,
                         "pid": process.pid,
-                        "ownerType": process.ownerType || "system"
+                        "ownerType": process.ownerType || "unknown"
                     });
                 }
             }
@@ -298,57 +291,64 @@ DesktopPluginComponent {
         root.groupCount = 0;
     }
 
-    function parseProcesses(rawText) {
-        const trimmed = rawText.trim();
-        if (!trimmed) {
-            rawProcesses = [];
-            rebuildRows();
-            lastError = "";
+    function syncFromDgopService() {
+        if (!DgopService.dgopAvailable) {
+            root.rawProcesses = [];
+            root.processes = [];
+            root.groupCount = 0;
+            root.visibleProcessCount = 0;
+            root.ownerScopeAvailable = false;
+            root.lastError = "dgop not available";
             return;
         }
 
-        const lines = trimmed.split("\n");
+        const source = Array.isArray(DgopService.allProcesses) ? DgopService.allProcesses : [];
+        let hasOwnerData = false;
         const parsed = [];
-        for (const line of lines) {
-            const clean = line.trim();
-            if (!clean) {
+
+        for (const proc of source) {
+            const pid = parseInt(proc.pid, 10);
+            if (!isFinite(pid) || pid <= 0) {
                 continue;
             }
 
-            const match = clean.match(/^(\d+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+(.+)$/);
-            if (!match) {
-                continue;
-            }
+            const username = (proc.username || "").trim();
+            const cpu = parseFloat(proc.cpu);
+            const memoryPercent = parseFloat(proc.memoryPercent);
+            const pssPercent = parseFloat(proc.pssPercent);
+            const command = ((proc.command || "").trim()) || ((proc.fullCommand || "").trim()) || "unknown";
 
-            const uid = parseInt(match[1], 10);
-            const pid = parseInt(match[2], 10);
-            const cpu = parseFloat(match[3]);
-            const memoryPercent = parseFloat(match[4]);
-            const command = match[5];
-            if (!isFinite(uid) || !isFinite(pid)) {
-                continue;
+            if (username.length > 0) {
+                hasOwnerData = true;
             }
 
             parsed.push({
                 "pid": pid,
-                "uid": uid,
                 "rowId": "process-" + pid.toString(),
                 "cpu": isFinite(cpu) ? cpu : 0,
-                "memoryPercent": isFinite(memoryPercent) ? memoryPercent : 0,
+                "memoryPercent": isFinite(memoryPercent) ? memoryPercent : (isFinite(pssPercent) ? pssPercent : 0),
                 "command": command,
-                "ownerType": root.ownerTypeForUid(uid)
+                "username": username,
+                "ownerType": username.length > 0 ? root.ownerTypeForUsername(username) : "unknown"
             });
         }
 
-        rawProcesses = parsed;
-        rebuildRows();
-        lastError = "";
+        root.rawProcesses = parsed;
+        root.ownerScopeAvailable = hasOwnerData;
+        if (!root.ownerScopeAvailable && root.processScope !== "all") {
+            root.processScope = "all";
+            pluginData.processScope = "all";
+        }
+        root.rebuildRows();
+        root.lastError = "";
     }
 
     Component.onCompleted: {
-        refreshUidMin();
-        refreshCoreCount();
-        refreshProcesses();
+        DgopService.addRef(["processes"]);
+        root.refreshProcesses();
+    }
+    Component.onDestruction: {
+        DgopService.removeRef(["processes"]);
     }
     onSortByChanged: rebuildRows()
     onSortDescendingChanged: rebuildRows()
@@ -365,67 +365,13 @@ DesktopPluginComponent {
         rebuildRows();
     }
 
-    Timer {
-        id: refreshTimer
-        interval: Math.max(1, root.refreshInterval) * 1000
-        running: true
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: root.refreshProcesses()
-    }
-
-    Process {
-        id: processReader
-        command: ["sh", "-c", "ps -eo uid=,pid=,pcpu=,pmem=,comm= --no-headers"]
-        running: false
-
-        onExited: exitCode => {
-            if (exitCode !== 0) {
-                root.lastError = "ps exited with code " + exitCode;
-                root.rawProcesses = [];
-                root.processes = [];
-                root.groupCount = 0;
-            }
+    Connections {
+        target: DgopService
+        function onAllProcessesChanged() {
+            root.refreshProcesses();
         }
-
-        stdout: StdioCollector {
-            onStreamFinished: {
-                root.parseProcesses(text);
-            }
-        }
-    }
-
-    Process {
-        id: coreCountReader
-        command: ["sh", "-c", "getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1"]
-        running: false
-
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const parsed = parseInt(text.trim(), 10);
-                if (isFinite(parsed) && parsed > 0) {
-                    root.cpuCoreCount = parsed;
-                    pluginData.cpuCoreCount = parsed;
-                }
-            }
-        }
-    }
-
-    Process {
-        id: uidMinReader
-        command: ["sh", "-c", "awk '$1==\"UID_MIN\"{print $2; exit}' /etc/login.defs 2>/dev/null || true"]
-        running: false
-
-        stdout: StdioCollector {
-            onStreamFinished: {
-                const parsed = parseInt(text.trim(), 10);
-                if (isFinite(parsed) && parsed > 0) {
-                    root.userUidMin = parsed;
-                } else {
-                    root.userUidMin = 1000;
-                }
-                root.rebuildRows();
-            }
+        function onDgopAvailableChanged() {
+            root.refreshProcesses();
         }
     }
 
@@ -517,12 +463,14 @@ DesktopPluginComponent {
                                     font.pixelSize: Theme.fontSizeSmall
                                     font.weight: root.processScope === "user" ? Font.Bold : Font.Medium
                                     isMonospace: true
-                                    color: root.processScope === "user" ? root.accentColor : root.dimColor
+                                    color: root.ownerScopeAvailable && root.processScope === "user" ? root.accentColor : root.dimColor
+                                    opacity: root.ownerScopeAvailable ? 1 : 0.5
                                 }
 
                                 MouseArea {
                                     anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
+                                    enabled: root.ownerScopeAvailable
+                                    cursorShape: root.ownerScopeAvailable ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     onClicked: root.processScope = "user"
                                 }
                             }
@@ -545,12 +493,14 @@ DesktopPluginComponent {
                                     font.pixelSize: Theme.fontSizeSmall
                                     font.weight: root.processScope === "system" ? Font.Bold : Font.Medium
                                     isMonospace: true
-                                    color: root.processScope === "system" ? root.accentColor : root.dimColor
+                                    color: root.ownerScopeAvailable && root.processScope === "system" ? root.accentColor : root.dimColor
+                                    opacity: root.ownerScopeAvailable ? 1 : 0.5
                                 }
 
                                 MouseArea {
                                     anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
+                                    enabled: root.ownerScopeAvailable
+                                    cursorShape: root.ownerScopeAvailable ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     onClicked: root.processScope = "system"
                                 }
                             }
